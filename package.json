@@ -1,0 +1,14 @@
+{
+  "name": "qa-payment-limits-regression",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright regression suite for a payment platform's limits & velocity subsystem: scope resolution, cascade routing, amount/count limits, schedule, multi-tenant isolation",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test --project=limits",
+    "limits": "playwright test --project=limits"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

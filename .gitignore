@@ -1,0 +1,12 @@
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# секреты — НЕ коммитить
+.env
+.env.local
+.DS_Store
+.vscode/
+.idea/
