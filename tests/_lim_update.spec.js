@@ -1,6 +1,6 @@
-// TC-17: инвалидация кэша при UPDATE живого лимита (не только create/delete). Это прямая проверка
-// того, ради чего ушли с SQL на UI-конфиг: Rails сбрасывает кэш на save. Меняем value/shadow «на лету»
-// и убеждаемся, что поведение платежа меняется синхронно.
+// TC-17: cache invalidation on UPDATE of a live limit (not only create/delete). This directly verifies
+// the reason for moving from SQL to UI config: Rails clears the cache on save. We change value/shadow on the fly
+// and confirm that payment behavior changes synchronously.
 import { test, expect, chromium } from '@playwright/test';
 import { loginAdmin, selectTenantPrimary } from '../lib/auth.js';
 import { createLimit, updateLimit, deleteLimits, cleanupByTitlePrefix, ledgerRead, ledgerClear } from '../lib/limits-admin.js';
@@ -29,46 +29,46 @@ test.afterAll(async () => {
   await api?.dispose(); await browser?.close();
 });
 
-// ── TC-17a: ужесточение на лету — не блокирующий лимит → UPDATE value→1 → начинает резать ──
-test('TC-17a: UPDATE ужесточает value (1000000→1) → платёж начинает резаться (cache invalidated)', async () => {
+// ── TC-17a: tightening on the fly — non-blocking limit → UPDATE value→1 → starts blocking ──
+test('TC-17a: UPDATE tightens value (1000000→1) → payment starts being blocked (cache invalidated)', async () => {
   test.setTimeout(140000);
   const id = await createLimit(page, { scopeLevel: 'Merchant', scope: PAYIN.coreId, limitType: 'Amount', direction: 'Payin', timeWindow: 'Day', value: 1000000, currency: 'RUB', onBreach: 'Decline', ...SCHED, title: `REG TC-17a ${Date.now()}` });
   let r = await sendPayment(api, { amountRub: 100 });
-  expect(r.status, 'до апдейта (cap=1000000) проходит').toBe(200);
+  expect(r.status, 'before update (cap=1000000) passes').toBe(200);
   await sleep(1500);
-  await updateLimit(page, id, { value: 1 });        // ужесточаем
+  await updateLimit(page, id, { value: 1 });        // tighten
   r = await sendPayment(api, { amountRub: 100 });
   console.log('[TC-17a] after tighten', r.status, kind(r) || '');
-  expect(r.status, 'после UPDATE cap=1 — режет (кэш сброшен на save)').toBe(422);
+  expect(r.status, 'after UPDATE cap=1 — blocks (cache cleared on save)').toBe(422);
   expect(kind(r)).toBe('limit_exceeded');
 });
 
-// ── TC-17b: ослабление на лету — блокирующий лимит → UPDATE value→большое → перестаёт резать ──
-test('TC-17b: UPDATE ослабляет value (1→1000000) → платёж перестаёт резаться', async () => {
+// ── TC-17b: loosening on the fly — blocking limit → UPDATE value→large → stops blocking ──
+test('TC-17b: UPDATE loosens value (1→1000000) → payment stops being blocked', async () => {
   test.setTimeout(140000);
   const id = await createLimit(page, { scopeLevel: 'Merchant', scope: PAYIN.coreId, limitType: 'Amount', direction: 'Payin', timeWindow: 'Day', value: 1, currency: 'RUB', onBreach: 'Decline', ...SCHED, title: `REG TC-17b ${Date.now()}` });
   let r = await sendPayment(api, { amountRub: 100 });
-  expect(r.status, 'до апдейта (cap=1) режет').toBe(422);
+  expect(r.status, 'before update (cap=1) blocks').toBe(422);
   await sleep(1500);
-  await updateLimit(page, id, { value: 1000000 });  // ослабляем
+  await updateLimit(page, id, { value: 1000000 });  // loosen
   r = await sendPayment(api, { amountRub: 100 });
   console.log('[TC-17b] after loosen', r.status, kind(r) || '');
-  expect(r.status, 'после UPDATE cap=1000000 — проходит').toBe(200);
+  expect(r.status, 'after UPDATE cap=1000000 — passes').toBe(200);
 });
 
-// ── TC-17c: toggle shadow_mode на лету — активный блок → UPDATE shadow=on → observe-only ──
-test('TC-17c: UPDATE toggle shadow_mode on → блокирующий лимит становится observe-only', async () => {
+// ── TC-17c: toggle shadow_mode on the fly — active block → UPDATE shadow=on → observe-only ──
+test('TC-17c: UPDATE toggle shadow_mode on → blocking limit becomes observe-only', async () => {
   test.setTimeout(140000);
   const id = await createLimit(page, { scopeLevel: 'Merchant', scope: PAYIN.coreId, limitType: 'Amount', direction: 'Payin', timeWindow: 'Day', value: 1, currency: 'RUB', onBreach: 'Decline', ...SCHED, title: `REG TC-17c ${Date.now()}` });
   let r = await sendPayment(api, { amountRub: 100 });
-  expect(r.status, 'до апдейта (active, cap=1) режет').toBe(422);
+  expect(r.status, 'before update (active, cap=1) blocks').toBe(422);
   await sleep(1500);
-  await updateLimit(page, id, { shadowMode: true }); // включаем shadow
-  // подтверждаем что флаг проставился в БД
+  await updateLimit(page, id, { shadowMode: true }); // enable shadow
+  // confirm the flag was set in the DB
   await page.goto('https://admin.example.com/admin/limits/' + id, { waitUntil: 'domcontentloaded' });
   const shadowVal = await page.evaluate(() => { const t = document.querySelector('main')?.innerText || ''; const m = t.match(/SHADOW MODE\s*\n?\s*(Yes|No)/i); return m ? m[1] : '(?)'; });
   r = await sendPayment(api, { amountRub: 100 });
   console.log(`[TC-17c] SHADOW=${shadowVal} after-toggle HTTP=${r.status} ${kind(r) || ''}`);
-  expect(shadowVal, 'shadow_mode переключился в Yes через UPDATE').toBe('Yes');
-  expect(r.status, 'observe-only после toggle — платёж проходит').toBe(200);
+  expect(shadowVal, 'shadow_mode switched to Yes via UPDATE').toBe('Yes');
+  expect(r.status, 'observe-only after toggle — payment passes').toBe(200);
 });

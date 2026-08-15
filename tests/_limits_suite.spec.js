@@ -1,13 +1,13 @@
-// Полный сьют лимитов на UI-харнессе (createLimit direct-input). Контроли: clean-state перед
-// каждым кейсом (negative control) + teardown с верификацией. Serial + скраббер REG в конце.
+// Full limits suite on the UI harness (createLimit direct-input). Controls: clean-state before
+// each case (negative control) + teardown with verification. Serial + REG scrubber at the end.
 import { test, expect, chromium } from '@playwright/test';
 import { loginAdmin, selectTenantPrimary } from '../lib/auth.js';
 import { createLimit, deleteLimit, deleteLimits, cleanupByTitlePrefix, ledgerRead, ledgerClear } from '../lib/limits-admin.js';
 import { newPayApi, sendPayment } from '../lib/payments-api.js';
 import { ENTITIES } from '../lib/config.js';
 
-// НЕ serial: serial обрывает остаток на первом фейле. --workers=1 даёт последовательность
-// и общий beforeAll, но кейсы независимы (фейл одного не скрывает остальные).
+// NOT serial: serial aborts the remainder on the first failure. --workers=1 gives sequential
+// execution and a shared beforeAll, but cases are independent (one failure doesn't hide the rest).
 const M = ENTITIES.merchants.PAYIN;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const BASE = {
@@ -25,9 +25,9 @@ test.beforeAll(async () => {
   await selectTenantPrimary(page);
   api = await newPayApi(M);
 });
-// СТРАХОВКА teardown: после КАЖДОГО теста сносим всё, что он создал но не удалил
-// (например упал на ассерте до deleteLimit). ledger трекает каждый созданный id.
-// Без этого орфан-лимит блокирует clean-state следующего теста (дедлок).
+// Safety-net teardown: after EACH test remove everything it created but didn't delete
+// (e.g. failed on an assert before deleteLimit). The ledger tracks every created id.
+// Without this an orphan limit blocks the next test's clean-state (deadlock).
 test.afterEach(async () => {
   const left = ledgerRead();
   if (left.length) { await deleteLimits(page, left).catch(() => {}); ledgerClear(); }
@@ -40,7 +40,7 @@ test.afterAll(async () => {
 
 async function cleanState(label) {
   const r = await sendPayment(api, { amountRub: 5000 });
-  expect(r.status, `${label}: среда чистая (нет застрявшего лимита)`).toBe(200);
+  expect(r.status, `${label}: environment clean (no stuck limit)`).toBe(200);
 }
 async function clearedAfterDelete() {
   for (let i = 0; i < 6; i++) {
@@ -51,41 +51,41 @@ async function clearedAfterDelete() {
   return false;
 }
 
-// ── BLOCK-кейсы: value=1/0 decline → payin режется 422 limit_exceeded ──
+// ── BLOCK cases: value=1/0 decline → payin blocked with 422 limit_exceeded ──
 for (const c of [
   { id: 'B1', name: 'merchant/145 amount value=1 → 422', cfg: { value: 1 } },
-  { id: 'B2', name: 'PSP amount value=1 → 422 (глобально)', cfg: { scopeLevel: 'Psp', scope: '', value: 1 } },
-  { id: 'B3', name: 'merchant/145 amount value=0 → 422 (полный блок)', cfg: { value: 0 } },
+  { id: 'B2', name: 'PSP amount value=1 → 422 (global)', cfg: { scopeLevel: 'Psp', scope: '', value: 1 } },
+  { id: 'B3', name: 'merchant/145 amount value=0 → 422 (full block)', cfg: { value: 0 } },
 ]) {
   test(`${c.id}: ${c.name}`, async () => {
     test.setTimeout(120000);
     await cleanState(c.id);
     const id = await createLimit(page, { ...BASE, title: `REG ${c.id} ${Date.now()}`, ...c.cfg });
     const r = await sendPayment(api, { amountRub: 5000 });
-    expect(r.status, `${c.id}: должен резать`).toBe(422);
-    expect(r.body?.errors?.[0]?.kind, `${c.id}: контракт ошибки`).toBe('limit_exceeded');
+    expect(r.status, `${c.id}: must block`).toBe(422);
+    expect(r.body?.errors?.[0]?.kind, `${c.id}: error contract`).toBe('limit_exceeded');
     await deleteLimit(page, id);
-    expect(await clearedAfterDelete(), `${c.id}: teardown снял блок`).toBe(true);
+    expect(await clearedAfterDelete(), `${c.id}: teardown lifted the block`).toBe(true);
   });
 }
 
-// ── NO-BLOCK: расписание не активно → payin проходит ──
+// ── NO-BLOCK: schedule not active → payin passes ──
 for (const c of [
-  { id: 'N1', name: 'effective_from в будущем → 200', cfg: { value: 1, effectiveFrom: '2027-01-01', effectiveTo: '2027-12-31' } },
-  { id: 'N2', name: 'effective_to в прошлом → 200 (истёк)', cfg: { value: 1, effectiveFrom: '2026-01-01', effectiveTo: '2026-08-10' } },
+  { id: 'N1', name: 'effective_from in the future → 200', cfg: { value: 1, effectiveFrom: '2027-01-01', effectiveTo: '2027-12-31' } },
+  { id: 'N2', name: 'effective_to in the past → 200 (expired)', cfg: { value: 1, effectiveFrom: '2026-01-01', effectiveTo: '2026-08-10' } },
 ]) {
   test(`${c.id}: ${c.name}`, async () => {
     test.setTimeout(120000);
     await cleanState(c.id);
     const id = await createLimit(page, { ...BASE, title: `REG ${c.id} ${Date.now()}`, ...c.cfg });
     const r = await sendPayment(api, { amountRub: 5000 });
-    expect(r.status, `${c.id}: расписание не активно → не режет`).toBe(200);
+    expect(r.status, `${c.id}: schedule not active → no block`).toBe(200);
     await deleteLimit(page, id);
   });
 }
 
-// ── Каскад: все 4 MID под лимитом → некуда → 422 ──
-test('B4: все 4 MID amount value=1 → 422 (каскад некуда)', async () => {
+// ── Cascade: all 4 MIDs under limit → nowhere to route → 422 ──
+test('B4: all 4 MIDs amount value=1 → 422 (cascade has nowhere to go)', async () => {
   test.setTimeout(150000);
   await cleanState('B4');
   const ids = [];
@@ -100,12 +100,12 @@ test('B4: все 4 MID amount value=1 → 422 (каскад некуда)', asyn
   expect(await clearedAfterDelete(), 'B4: teardown').toBe(true);
 });
 
-// ── Velocity: count by card_hash cap=2 → 3-й той же картой режется ──
-// Отдельная карта (4627) чтобы счётчик card_hash был изолирован от amount-кейсов (те на 4392).
-test('V1: velocity count/card_hash cap=2 → 3-й той же картой 422', async () => {
+// ── Velocity: count by card_hash cap=2 → 3rd payment with the same card is blocked ──
+// Separate card (4627) so the card_hash counter is isolated from the amount cases (those use 4392).
+test('V1: velocity count/card_hash cap=2 → 3rd with same card 422', async () => {
   test.setTimeout(120000);
   const CARD = '4627342642639018';
-  await cleanState('V1'); // env-чек дефолт-картой (не трогает счётчик CARD)
+  await cleanState('V1'); // env check with the default card (does not touch the CARD counter)
   const id = await createLimit(page, {
     ...BASE, title: `REG V1 ${Date.now()}`, limitType: 'Count', byField: 'Card hash',
     timeWindow: 'Hour', value: 2, countBasis: 'Attempts',
@@ -120,16 +120,16 @@ test('V1: velocity count/card_hash cap=2 → 3-й той же картой 422',
   await deleteLimit(page, id);
   expect(codes[0], 'V1 #1').toBe(200);
   expect(codes[1], 'V1 #2').toBe(200);
-  expect(codes[2], 'V1 #3 режется').toBe(422);
+  expect(codes[2], 'V1 #3 blocked').toBe(422);
 });
 
-// ── B5: одиночный MID-decline НЕ стопит каскад (уходит на 466) — нужен route_decisions ──
-// Наблюдение: MID 465 decline → payin прошёл 200 (не 422). Decline hard-стопит только когда
-// перекрыты ВСЕ достижимые MID (=B4). Пока skip: без route_decisions не отличить «decline≠stop»
-// от «465 не первый». Расследовать отдельно.
-test.skip('B5: MID 465 decline — одиночный не стопит каскад (→200), нужен route_decisions', async () => {});
+// ── B5: a single MID decline does NOT stop the cascade (routes to 466) — needs route_decisions ──
+// Observation: MID 465 decline → payin passed 200 (not 422). Decline hard-stops only when
+// ALL reachable MIDs are covered (=B4). Skipped for now: without route_decisions we can't tell
+// "decline≠stop" from "465 is not first". Investigate separately.
+test.skip('B5: MID 465 decline — a single one does not stop the cascade (→200), needs route_decisions', async () => {});
 
-// ── B6: оба gateway (default 1 + paytech 133) под лимитом → fallback некуда → 422 ──
+// ── B6: both gateways (default 1 + paytech 133) under limit → no fallback → 422 ──
 test('B6: gateway 1+133 amount value=1 → 422', async () => {
   test.setTimeout(120000);
   await cleanState('B6');
@@ -141,41 +141,41 @@ test('B6: gateway 1+133 amount value=1 → 422', async () => {
   expect(await clearedAfterDelete(), 'B6: teardown').toBe(true);
 });
 
-// ── N3: два лимита на merchant (loose 1e6 + strict 1) → срабатывает строгий ──
-test('N3: overlapping — строгий лимит выигрывает → 422', async () => {
+// ── N3: two limits on the merchant (loose 1e6 + strict 1) → the strict one fires ──
+test('N3: overlapping — the strict limit wins → 422', async () => {
   test.setTimeout(120000);
   await cleanState('N3');
   const loose = await createLimit(page, { ...BASE, title: `REG N3-loose ${Date.now()}`, value: 1000000 });
   const strict = await createLimit(page, { ...BASE, title: `REG N3-strict ${Date.now()}`, value: 1 });
   const r = await sendPayment(api, { amountRub: 5000 });
-  expect(r.status, 'N3: строгий режет').toBe(422);
+  expect(r.status, 'N3: the strict one blocks').toBe(422);
   await deleteLimit(page, strict);
   await deleteLimit(page, loose);
   expect(await clearedAfterDelete(), 'N3: teardown').toBe(true);
 });
 
-// ── F1: on_breach=fallback на MID 465, 466/467 свободны → платёж проходит каскадом ──
-test('F1: MID 465 fallback → платёж проходит (200) через резервный MID', async () => {
+// ── F1: on_breach=fallback on MID 465, 466/467 are free → payment passes via cascade ──
+test('F1: MID 465 fallback → payment passes (200) via a backup MID', async () => {
   test.setTimeout(120000);
   await cleanState('F1');
   const id = await createLimit(page, { ...BASE, title: `REG F1 ${Date.now()}`, scopeLevel: 'Mid', scope: 465, value: 1, onBreach: 'Fallback' });
   const r = await sendPayment(api, { amountRub: 5000 });
-  expect(r.status, 'F1: fallback → 200 (не decline)').toBe(200);
+  expect(r.status, 'F1: fallback → 200 (not decline)').toBe(200);
   await deleteLimit(page, id);
 });
 
-// ── S1: shadow_mode=true → лимит не режет (observe-only) ──
-test('S1: shadow_mode value=1 → 200 (не блокирует)', async () => {
+// ── S1: shadow_mode=true → limit does not block (observe-only) ──
+test('S1: shadow_mode value=1 → 200 (does not block)', async () => {
   test.setTimeout(120000);
   await cleanState('S1');
   const id = await createLimit(page, { ...BASE, title: `REG S1 ${Date.now()}`, value: 1, shadowMode: true });
   const r = await sendPayment(api, { amountRub: 5000 });
-  expect(r.status, 'S1: shadow не режет').toBe(200);
+  expect(r.status, 'S1: shadow does not block').toBe(200);
   await deleteLimit(page, id);
 });
 
-// ── V2: velocity email_hash cap=2 (уникальный email) → 3-й режется ──
-test('V2: velocity count/email_hash cap=2 → 3-й тем же email 422', async () => {
+// ── V2: velocity email_hash cap=2 (unique email) → 3rd is blocked ──
+test('V2: velocity count/email_hash cap=2 → 3rd with same email 422', async () => {
   test.setTimeout(120000);
   const EMAIL = `veltest${Date.now()}@qa.test`;
   await cleanState('V2');
@@ -184,24 +184,24 @@ test('V2: velocity count/email_hash cap=2 → 3-й тем же email 422', async
   for (let i = 1; i <= 3; i++) { const r = await sendPayment(api, { amountRub: 100, customer: { email: EMAIL } }); codes.push(r.status); await sleep(2000); }
   console.log('[V2] codes =', JSON.stringify(codes));
   await deleteLimit(page, id);
-  expect(codes[2], 'V2 #3 режется').toBe(422);
+  expect(codes[2], 'V2 #3 blocked').toBe(422);
 });
 
-// ── Val1: from>to — форма ДОЛЖНА отклонять; сейчас известный баг VEL-BUG-2 (создаётся) ──
-test('Val1: effective_from > effective_to — known-bug VEL-BUG-2 (создаётся)', async () => {
+// ── Val1: from>to — the form SHOULD reject; currently a known bug VEL-BUG-2 (it gets created) ──
+test('Val1: effective_from > effective_to — known-bug VEL-BUG-2 (gets created)', async () => {
   test.setTimeout(120000);
   await cleanState('Val1');
   let id = null, created = false;
   try { id = await createLimit(page, { ...BASE, title: `REG Val1 ${Date.now()}`, value: 1, effectiveFrom: '2027-12-31', effectiveTo: '2026-01-01' }); created = true; } catch { created = false; }
-  console.log(`[Val1] from>to created=${created} (ожидание по VEL-BUG-2: пока баг — создаётся; починят → тест упадёт, поменять на reject)`);
-  expect(created, 'VEL-BUG-2: сейчас лимит с from>to создаётся (должен отклоняться)').toBe(true);
+  console.log(`[Val1] from>to created=${created} (expectation per VEL-BUG-2: while the bug stands it gets created; once fixed → test fails, switch to reject)`);
+  expect(created, 'VEL-BUG-2: currently a limit with from>to gets created (should be rejected)').toBe(true);
   if (id) await deleteLimit(page, id);
 });
 
-// ── V3: velocity card_brand — РЕЖЕТ. Ре-тест 12.08: VEL-BUG-1 для card_brand УСТРАНЁН
-// (на 19.06 был overshoot/counter=0; сейчас считает по бренду и блокирует). Все тест-карты
-// Visa (4xxx) = одна brand-группа → 3-я той же brand режется. ──
-test('V3: velocity count/card_brand cap=2 → 3-й той же brand 422 (VEL-BUG-1 FIXED)', async () => {
+// ── V3: velocity card_brand — BLOCKS. Re-test 12.08: VEL-BUG-1 for card_brand RESOLVED
+// (on 19.06 there was overshoot/counter=0; now it counts per brand and blocks). All test cards
+// are Visa (4xxx) = one brand group → 3rd of the same brand is blocked. ──
+test('V3: velocity count/card_brand cap=2 → 3rd of same brand 422 (VEL-BUG-1 FIXED)', async () => {
   test.setTimeout(120000);
   await cleanState('V3');
   const id = await createLimit(page, { ...BASE, title: `REG V3 ${Date.now()}`, limitType: 'Count', byField: 'Card brand', timeWindow: 'Hour', value: 2, countBasis: 'Attempts' });
@@ -209,28 +209,28 @@ test('V3: velocity count/card_brand cap=2 → 3-й той же brand 422 (VEL-BU
   for (let i = 1; i <= 3; i++) { const r = await sendPayment(api, { amountRub: 100 }); codes.push(r.status); await sleep(2000); }
   console.log('[V3] codes =', JSON.stringify(codes));
   await deleteLimit(page, id);
-  expect(codes[2], 'V3: card_brand режет (VEL-BUG-1 пофикшен)').toBe(422);
+  expect(codes[2], 'V3: card_brand blocks (VEL-BUG-1 fixed)').toBe(422);
 });
 
-// ── Покрыто в отдельных спеках (вынесено из этого файла) ──
+// ── Covered in separate specs (moved out of this file) ──
 // TC-13 payout ............ _lim_payout.spec.js (10 green)
 // TC-19 idempotency ....... _lim_idem.spec.js (green)
-// B5 single-MID decline ... _lim_route.spec.js (RD-2, объяснён route'ом)
+// B5 single-MID decline ... _lim_route.spec.js (RD-2, explained by the route)
 // Shop-scope + count_basis  _lim_scope_basis.spec.js (SC-1/SC-2/CB-1/CB-2 green)
-// amount-накопление ....... _lim_amount_acc.spec.js (AM-ACC1/2 green)
+// amount accumulation ..... _lim_amount_acc.spec.js (AM-ACC1/2 green)
 // window-reset (minute) ... _lim_window_reset.spec.js (TW-RESET green)
-// TC-23 мультитенант ...... _lim_multitenant.spec.js (MT-1/2/3 green; tenantC split-brain FIXED)
-// TC-15 валюта ............ _lim_currency.spec.js (TC-15a/b green — валюта = измерение матчинга)
-// TC-17 update/toggle ..... _lim_update.spec.js (TC-17a/b/c green — cache invalidation на UPDATE)
-// TC-18 multi-limit ....... _lim_multi.spec.js (TC-18a/b green — строгий выигрывает / any-breach блок)
-// TC-22 refund ............ _lim_refund.spec.js (green — refund не декрементит счётчик)
-// boundary + open-ended ... _lim_boundary_sched.spec.js (BND-1 граница включительна / SCH-1 to=NULL)
-// TC-14.2 concurrency ..... _lim_concurrency.spec.js (CONC-1/2 green — счётчик атомарен, no double-spend)
+// TC-23 multitenant ....... _lim_multitenant.spec.js (MT-1/2/3 green; tenantC split-brain FIXED)
+// TC-15 currency .......... _lim_currency.spec.js (TC-15a/b green — currency = a matching dimension)
+// TC-17 update/toggle ..... _lim_update.spec.js (TC-17a/b/c green — cache invalidation on UPDATE)
+// TC-18 multi-limit ....... _lim_multi.spec.js (TC-18a/b green — strict wins / any-breach blocks)
+// TC-22 refund ............ _lim_refund.spec.js (green — refund does not decrement the counter)
+// boundary + open-ended ... _lim_boundary_sched.spec.js (BND-1 boundary is inclusive / SCH-1 to=NULL)
+// TC-14.2 concurrency ..... _lim_concurrency.spec.js (CONC-1/2 green — counter is atomic, no double-spend)
 
-// ── Осознанные SKIP: блокировано дефектом деплоя LIM-1 (filter_lists/bin_range модели сломаны) ──
-test.skip('BIN1: velocity bin_range — блокировано LIM-1 (модель bin_range сломана, item-picker пуст)', async () => {});
-test.skip('TC-9 blacklist — блокировано LIM-1 (filter_lists нефункциональны)', async () => {});
-test.skip('TC-12 shared — блокировано LIM-1 (shared_limit через filter_lists)', async () => {});
+// ── Intentional SKIP: blocked by deploy defect LIM-1 (filter_lists/bin_range models broken) ──
+test.skip('BIN1: velocity bin_range — blocked by LIM-1 (bin_range model broken, item-picker empty)', async () => {});
+test.skip('TC-9 blacklist — blocked by LIM-1 (filter_lists non-functional)', async () => {});
+test.skip('TC-12 shared — blocked by LIM-1 (shared_limit via filter_lists)', async () => {});
 
-// ── Осознанный SKIP: ledger-домен (не enforcement лимитов) ──
-test.skip('TC-20 reserve lifecycle — нужен контроль settle/timeout (ledger-домен, отдельно)', async () => {});
+// ── Intentional SKIP: ledger domain (not limit enforcement) ──
+test.skip('TC-20 reserve lifecycle — needs settle/timeout control (ledger domain, separate)', async () => {});

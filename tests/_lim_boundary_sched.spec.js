@@ -1,6 +1,6 @@
-// Добивка пробелов плана: boundary-точность суммы (1.3/1.4 — граница включительна) и
-// open-ended расписание effective_to=NULL (5.4 — активен бессрочно). Оба доступны через UI
-// (лимит армится мгновенно, sync-лаг из плана к UI-конфигу не относится).
+// Filling plan gaps: amount boundary precision (1.3/1.4 — boundary is inclusive) and
+// open-ended schedule effective_to=NULL (5.4 — active indefinitely). Both are available via the UI
+// (the limit arms instantly; the sync lag from the plan does not apply to UI config).
 import { test, expect, chromium } from '@playwright/test';
 import { loginAdmin, selectTenantPrimary } from '../lib/auth.js';
 import { createLimit, deleteLimits, cleanupByTitlePrefix, ledgerRead, ledgerClear } from '../lib/limits-admin.js';
@@ -29,28 +29,28 @@ test.afterAll(async () => {
   await api?.dispose(); await browser?.close();
 });
 
-// ── BND-1 (план 1.3+1.4): граница суммы включительна — расход РОВНО=лимит проходит, +1 режет ──
-test('BND-1: amount cap=10000 — расход ровно=лимит 200, следующий (+1) 422', async () => {
+// ── BND-1 (plan 1.3+1.4): amount boundary is inclusive — spend EXACTLY=limit passes, +1 blocks ──
+test('BND-1: amount cap=10000 — spend exactly=limit 200, next (+1) 422', async () => {
   test.setTimeout(140000);
   await createLimit(page, { scopeLevel: 'Merchant', scope: PAYIN.coreId, limitType: 'Amount', direction: 'Payin', timeWindow: 'Day', value: 10000, currency: 'RUB', onBreach: 'Decline', ...SCHED, title: `REG BND-1 ${Date.now()}` });
   const seq = [];
   let r = await sendPayment(api, { amountRub: 9900 }); seq.push(r.status); await sleep(2000); // cum=9900 < 10000
-  r = await sendPayment(api, { amountRub: 100 });  seq.push(r.status); await sleep(2000);       // cum=10000 РОВНО = лимит
-  r = await sendPayment(api, { amountRub: 1 });    seq.push(r.status);                            // cum=10001 > лимит
+  r = await sendPayment(api, { amountRub: 100 });  seq.push(r.status); await sleep(2000);       // cum=10000 EXACTLY = limit
+  r = await sendPayment(api, { amountRub: 1 });    seq.push(r.status);                            // cum=10001 > limit
   console.log('[BND-1] seq', JSON.stringify(seq), 'kind3', kind(r));
-  expect(seq[0], '9900 (< лимита) проходит').toBe(200);
-  expect(seq[1], 'ровно=лимит (10000) проходит — граница включительна (≤)').toBe(200);
-  expect(seq[2], '+1 сверх лимита (10001) режется').toBe(422);
+  expect(seq[0], '9900 (< limit) passes').toBe(200);
+  expect(seq[1], 'exactly=limit (10000) passes — boundary is inclusive (≤)').toBe(200);
+  expect(seq[2], '+1 over the limit (10001) blocked').toBe(422);
   expect(kind(r)).toBe('limit_exceeded');
 });
 
-// ── SCH-1 (план 5.4): open-ended лимит (effective_from прошлое, effective_to пусто) активен бессрочно ──
-test('SCH-1: effective_to=NULL → лимит активен бессрочно и режет (422)', async () => {
+// ── SCH-1 (plan 5.4): open-ended limit (effective_from in the past, effective_to empty) active indefinitely ──
+test('SCH-1: effective_to=NULL → limit active indefinitely and blocks (422)', async () => {
   test.setTimeout(120000);
-  // effectiveTo НЕ передаём → поле пустое; from в прошлом
+  // effectiveTo NOT passed → field empty; from in the past
   await createLimit(page, { scopeLevel: 'Merchant', scope: PAYIN.coreId, limitType: 'Amount', direction: 'Payin', timeWindow: 'Day', value: 1, currency: 'RUB', onBreach: 'Decline', effectiveFrom: '2026-08-01', title: `REG SCH-1 ${Date.now()}` });
   const r = await sendPayment(api, { amountRub: 100 });
   console.log('[SCH-1] open-ended payin', r.status, kind(r) || '');
-  expect(r.status, 'бессрочный лимит (to=NULL) активен и режет').toBe(422);
+  expect(r.status, 'open-ended limit (to=NULL) is active and blocks').toBe(422);
   expect(kind(r)).toBe('limit_exceeded');
 });

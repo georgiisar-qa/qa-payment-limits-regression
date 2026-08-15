@@ -1,4 +1,4 @@
-// Route-level пруф каскада через route_decisions (Core Console). Доказываем КАКОЙ MID выбран.
+// Route-level cascade proof via route_decisions (Core Console). We prove WHICH MID is selected.
 import { test, expect } from '@playwright/test';
 import { loginAdmin, selectTenantPrimary } from '../lib/auth.js';
 import { createLimit, deleteLimit, deleteLimits, ledgerRead, ledgerClear } from '../lib/limits-admin.js';
@@ -12,7 +12,7 @@ const BASE = {
   currency: 'RUB', onBreach: 'Decline', effectiveFrom: '2026-08-01', effectiveTo: '2027-12-31',
 };
 
-// Страховка teardown: снести созданные-но-неудалённые лимиты после каждого теста.
+// Teardown safety net: remove created-but-undeleted limits after each test.
 test.afterEach(async ({ page }) => {
   const left = ledgerRead();
   if (left.length) { await deleteLimits(page, left).catch(() => {}); ledgerClear(); }
@@ -29,7 +29,7 @@ async function probe(page, token, label) {
   return { successMid, attempts, rd };
 }
 
-test('RD-1: MID 465 fallback → успех перелился на другой MID (не 465)', async ({ page }) => {
+test('RD-1: MID 465 fallback → success spilled over to another MID (not 465)', async ({ page }) => {
   test.setTimeout(180000);
   await loginAdmin(page); await selectTenantPrimary(page);
   const api = await newPayApi(M);
@@ -44,10 +44,10 @@ test('RD-1: MID 465 fallback → успех перелился на другой
   const { successMid } = await probe(page, token, 'RD-1');
   await deleteLimit(page, id);
   await api.dispose();
-  expect(successMid, 'успех НЕ на 465 (перелив на резервный MID)').not.toBe('465');
+  expect(successMid, 'success NOT on 465 (spillover to the backup MID)').not.toBe('465');
 });
 
-test('RD-2: MID 465 одиночный decline → что делает каскад (документируем)', async ({ page }) => {
+test('RD-2: MID 465 single decline → what the cascade does (documented)', async ({ page }) => {
   test.setTimeout(180000);
   await loginAdmin(page); await selectTenantPrimary(page);
   const api = await newPayApi(M);
@@ -58,7 +58,7 @@ test('RD-2: MID 465 одиночный decline → что делает каск�
   const token = r.body?.payment_id || r.body?.token;
   console.log('[RD-2] payin', r.status, 'kind', r.body?.errors?.[0]?.kind || '—', 'token', token);
   if (r.status === 200 && token) await probe(page, token, 'RD-2');
-  else console.log('[RD-2] платёж отбит (422) — payin-запись может не персиститься, route недоступен');
+  else console.log('[RD-2] payment rejected (422) — the payin record may not persist, route unavailable');
   await deleteLimit(page, id);
   await api.dispose();
 });

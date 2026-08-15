@@ -2,7 +2,7 @@
 
 Playwright **UI + API regression suite** for a payment platform's **limits & velocity** subsystem — deterministic enforcement testing across scopes, cascade routing, schedules, currency, concurrency and multi-tenant isolation.
 
-> Anonymized portfolio extract: domains → `example.com`, generic entity names, **no secrets in code** (all creds via env). Code comments are in Russian.
+> Anonymized portfolio extract: domains → `example.com`, generic entity names, **no secrets in code** (all creds via env).
 
 ## What it covers — 14 specs, ~49 cases
 

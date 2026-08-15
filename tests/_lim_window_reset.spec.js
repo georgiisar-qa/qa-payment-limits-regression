@@ -1,6 +1,6 @@
-// Сброс time_window: после исчерпания лимита в окне «minute» счётчик откатывается по истечении окна,
-// следующий платёж снова проходит. Ни один Day-кейс этого не проверяет (окно не роллится в прогоне).
-// count_basis=success + фикс. ожидание 70с — надёжно и для rolling-60s, и для calendar-minute.
+// time_window reset: after exhausting the limit in a "minute" window, the counter rolls back once the window expires,
+// and the next payment passes again. No Day case checks this (the window does not roll within a run).
+// count_basis=success + a fixed 70s wait — reliable for both rolling-60s and calendar-minute.
 import { test, expect, chromium } from '@playwright/test';
 import { loginAdmin, selectTenantPrimary } from '../lib/auth.js';
 import { createLimit, deleteLimits, cleanupByTitlePrefix, ledgerRead, ledgerClear } from '../lib/limits-admin.js';
@@ -29,28 +29,28 @@ test.afterAll(async () => {
   await api?.dispose(); await browser?.close();
 });
 
-// ── TW-RESET: count cap=2 / window=minute → исчерпать, дождаться отката окна, снова проходит ──
-test('TW-RESET: minute-окно откатывается → после ожидания платёж снова проходит', async () => {
+// ── TW-RESET: count cap=2 / window=minute → exhaust, wait for the window to roll back, passes again ──
+test('TW-RESET: minute window rolls back → after the wait the payment passes again', async () => {
   test.setTimeout(200000);
   await createLimit(page, { scopeLevel: 'Merchant', scope: PAYIN.coreId, limitType: 'Count', direction: 'Payin', timeWindow: 'Minute', value: 2, currency: 'RUB', countBasis: 'Success', onBreach: 'Decline', ...SCHED, title: `REG TW-RESET ${Date.now()}` });
 
-  // Фаза 1: исчерпать окно
+  // Phase 1: exhaust the window
   const before = [];
   let r = await sendPayment(api, { amountRub: 100 }); before.push(r.status); await sleep(2500); // success #1
   r = await sendPayment(api, { amountRub: 100 }); before.push(r.status); await sleep(2500);       // success #2 → counter=2
-  r = await sendPayment(api, { amountRub: 100 }); before.push(r.status);                            // #3 → 422 (окно активно)
+  r = await sendPayment(api, { amountRub: 100 }); before.push(r.status);                            // #3 → 422 (window active)
   console.log('[TW-RESET] before-wait', JSON.stringify(before), 'kind3', kind(r));
   expect(before[0], 'success #1').toBe(200);
   expect(before[1], 'success #2').toBe(200);
-  expect(before[2], '#3 режется — окно активно').toBe(422);
+  expect(before[2], '#3 rejected — window active').toBe(422);
   expect(kind(r)).toBe('limit_exceeded');
 
-  // Фаза 2: ждём отката minute-окна (успехи #1/#2 стареют из окна)
-  console.log('[TW-RESET] ждём 70с отката окна…');
+  // Phase 2: wait for the minute window to roll back (successes #1/#2 age out of the window)
+  console.log('[TW-RESET] waiting 70s for the window to roll back…');
   await sleep(70000);
 
-  // Фаза 3: после отката платёж снова проходит
+  // Phase 3: after the roll-back the payment passes again
   r = await sendPayment(api, { amountRub: 100 });
   console.log('[TW-RESET] after-wait HTTP', r.status, kind(r) || '');
-  expect(r.status, 'после отката minute-окна платёж снова проходит').toBe(200);
+  expect(r.status, 'after the minute window rolls back the payment passes again').toBe(200);
 });

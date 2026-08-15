@@ -1,6 +1,6 @@
-// TC-22: refund vs счётчик лимита. Лимит — velocity-контроль попыток на авторизации; последующий
-// refund НЕ возвращает бюджет (счётчик не декрементится). Проверено: refund проходит (HTTP 200),
-// но payin-счётчик остаётся исчерпанным.
+// TC-22: refund vs the limit counter. The limit is a velocity control of attempts at authorization; a subsequent
+// refund does NOT return budget (the counter is not decremented). Verified: refund succeeds (HTTP 200),
+// but the payin counter stays exhausted.
 import { test, expect, chromium } from '@playwright/test';
 import { loginAdmin, selectTenantPrimary } from '../lib/auth.js';
 import { createLimit, deleteLimits, cleanupByTitlePrefix, ledgerRead, ledgerClear } from '../lib/limits-admin.js';
@@ -29,8 +29,8 @@ test.afterAll(async () => {
   await api?.dispose(); await browser?.close();
 });
 
-// ── TC-22: refund не декрементит payin-счётчик (velocity не «возвращается») ──
-test('TC-22: refund проходит, но НЕ освобождает исчерпанный payin-счётчик', async () => {
+// ── TC-22: refund does not decrement the payin counter (velocity is not "returned") ──
+test('TC-22: refund succeeds but does NOT free the exhausted payin counter', async () => {
   test.setTimeout(160000);
   await createLimit(page, { scopeLevel: 'Merchant', scope: PAYIN.coreId, limitType: 'Count', direction: 'Payin', byField: 'Card hash', timeWindow: 'Hour', value: 2, currency: 'RUB', countBasis: 'Attempts', onBreach: 'Decline', ...SCHED, title: `REG TC-22 ${Date.now()}` });
 
@@ -39,20 +39,20 @@ test('TC-22: refund проходит, но НЕ освобождает исче�
   const p3 = await sendPayment(api, { amountRub: 500 });
   expect(p1.status, '#1').toBe(200);
   expect(p2.status, '#2').toBe(200);
-  expect(p3.status, '#3 режется (счётчик исчерпан)').toBe(422);
+  expect(p3.status, '#3 rejected (counter exhausted)').toBe(422);
 
-  // refund payin#1 — проходит синхронно
+  // refund payin#1 — succeeds synchronously
   const pid = p1.body?.payment_id;
-  expect(pid, 'payment_id для refund').toBeTruthy();
+  expect(pid, 'payment_id for refund').toBeTruthy();
   const res = await api.post(`/api/v1/payments/${pid}/refund`, { data: { amount: 50000, reason: 'qa TC-22' } });
   const refBody = await res.json().catch(() => ({}));
   console.log(`[TC-22] refund → HTTP=${res.status()} refund_id=${refBody.refund_id || '-'}`);
-  expect(res.status(), 'refund проходит').toBe(200);
+  expect(res.status(), 'refund succeeds').toBe(200);
   await sleep(4000);
 
-  // счётчик НЕ освободился — следующий payin по-прежнему режется
+  // counter did NOT free up — the next payin is still rejected
   const p4 = await sendPayment(api, { amountRub: 500 });
-  console.log(`[TC-22] p4 после refund → ${p4.status}/${kind(p4) || '-'}`);
-  expect(p4.status, 'refund НЕ вернул velocity-бюджет — payin по-прежнему режется').toBe(422);
+  console.log(`[TC-22] p4 after refund → ${p4.status}/${kind(p4) || '-'}`);
+  expect(p4.status, 'refund did NOT return velocity budget — payin is still rejected').toBe(422);
   expect(kind(p4)).toBe('limit_exceeded');
 });
